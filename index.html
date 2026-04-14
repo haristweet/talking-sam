@@ -366,29 +366,34 @@ function H(){let Y=(H,e)=>0!=(H&e),r=H=>{let A=new Uint8Array(H.length);return H
       });
     }
 
-    // Unlock AudioContext on first user gesture (some browsers, especially iOS Safari,
-    // start it in 'suspended' state on HTTPS even after clicks).
-    (function unlockAudioOnce() {
-      const unlock = () => {
-        try {
-          const Ctx = window.AudioContext || window.webkitAudioContext;
-          if (!Ctx) return;
-          const ctx = new Ctx();
-          if (ctx.state === 'suspended' && ctx.resume) ctx.resume();
-          // Play a tiny silent buffer to fully unlock on iOS
-          const buf = ctx.createBuffer(1, 1, 22050);
-          const src = ctx.createBufferSource();
-          src.buffer = buf;
-          src.connect(ctx.destination);
-          src.start(0);
-        } catch (_) {}
-        window.removeEventListener('pointerdown', unlock);
-        window.removeEventListener('keydown', unlock);
-        window.removeEventListener('touchstart', unlock);
+    // Unlock AudioContext reliably: wrap the constructor so every AudioContext created
+    // by the page (including the one sam-js creates internally) is tracked, and resume
+    // them all on any user gesture. Fixes the "first Speak after page load is silent" bug
+    // on HTTPS deployments where the context starts in 'suspended' state.
+    (function wrapAudioContext() {
+      const Orig = window.AudioContext || window.webkitAudioContext;
+      if (!Orig) return;
+      const contexts = [];
+      function Wrapped() {
+        const c = arguments.length ? new Orig(arguments[0]) : new Orig();
+        contexts.push(c);
+        // Attempt an immediate resume if possible
+        try { if (c.state === 'suspended' && c.resume) c.resume(); } catch (_) {}
+        return c;
+      }
+      Wrapped.prototype = Orig.prototype;
+      window.AudioContext = Wrapped;
+      window.webkitAudioContext = Wrapped;
+
+      const resumeAll = () => {
+        contexts.forEach((c) => {
+          try { if (c.state === 'suspended' && c.resume) c.resume(); } catch (_) {}
+        });
       };
-      window.addEventListener('pointerdown', unlock, { once: true });
-      window.addEventListener('keydown', unlock, { once: true });
-      window.addEventListener('touchstart', unlock, { once: true });
+      // Use capture phase so we run before app handlers
+      ['pointerdown', 'mousedown', 'touchstart', 'keydown', 'click'].forEach((ev) => {
+        window.addEventListener(ev, resumeAll, { capture: true });
+      });
     })();
 
     const opts = { speed: 72, pitch: 64, throat: 128, mouth: 128 };
